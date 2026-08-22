@@ -9,6 +9,7 @@ import android.media.MediaRecorder
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import kotlin.concurrent.thread
 
 class AudioEngine(private val port: Int = 50005) {
@@ -24,6 +25,20 @@ class AudioEngine(private val port: Int = 50005) {
     @Volatile private var isListening = false
 
     private var socket: DatagramSocket? = null
+
+    @Synchronized
+    private fun getOrCreateSocket(): DatagramSocket {
+        val currentSocket = socket
+        if (currentSocket != null && !currentSocket.isClosed) {
+            return currentSocket
+        }
+        val newSocket = DatagramSocket(null).apply {
+            reuseAddress = true
+            bind(InetSocketAddress(port))
+        }
+        socket = newSocket
+        return newSocket
+    }
 
     fun startListening() {
         if (isListening) return
@@ -50,17 +65,13 @@ class AudioEngine(private val port: Int = 50005) {
             if (track.state != AudioTrack.STATE_INITIALIZED) return@thread
 
             track.play()
-            
-            if (socket == null || socket?.isClosed == true) {
-                socket = DatagramSocket(port)
-            }
-            
+            val activeSocket = getOrCreateSocket()
             val buffer = ByteArray(1024)
             val packet = DatagramPacket(buffer, buffer.size)
 
-            while (isListening) {
+            while (isListening && !activeSocket.isClosed) {
                 try {
-                    socket?.receive(packet)
+                    activeSocket.receive(packet)
                     if (!isTransmitting) {
                         track.write(packet.data, 0, packet.length)
                     }
@@ -92,14 +103,19 @@ class AudioEngine(private val port: Int = 50005) {
                 return@thread
             }
             
+            val activeSocket = getOrCreateSocket()
             val buffer = ByteArray(1024)
             recorder.startRecording()
 
-            while (isTransmitting) {
+            while (isTransmitting && !activeSocket.isClosed) {
                 val read = recorder.read(buffer, 0, buffer.size)
                 if (read > 0) {
-                    val packet = DatagramPacket(buffer, read, targetIp, port)
-                    socket?.send(packet)
+                    try {
+                        val packet = DatagramPacket(buffer, read, targetIp, port)
+                        activeSocket.send(packet)
+                    } catch (e: Exception) {
+                        break
+                    }
 
                     var maxPeak = 0
                     for (i in 0 until read step 2) {

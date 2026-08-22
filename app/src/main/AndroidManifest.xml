@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    
+    <!-- Required for NsdManager mDNS on targetSdk 33+ without crashing on Android 13/14 -->
+    <uses-permission 
+        android:name="android.permission.NEARBY_WIFI_DEVICES" 
+        android:usesPermissionFlags="neverForLocation" />
 
     <application
         android:allowBackup="true"

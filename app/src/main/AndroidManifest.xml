@@ -8,16 +8,13 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.VIBRATE" />
     
-    <!-- Required for NsdManager mDNS on targetSdk 33+ without crashing on Android 13/14 -->
     <uses-permission 
         android:name="android.permission.NEARBY_WIFI_DEVICES" 
         android:usesPermissionFlags="neverForLocation" />
 
     <application
         android:allowBackup="true"
-        android:icon="@mipmap/ic_launcher"
         android:label="TACTICOM"
-        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoTitleBar">
         <activity

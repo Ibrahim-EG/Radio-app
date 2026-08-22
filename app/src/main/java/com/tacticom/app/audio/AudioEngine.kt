@@ -17,8 +17,8 @@ class AudioEngine(private val port: Int = 50005) {
     private val channelOut = AudioFormat.CHANNEL_OUT_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
     
-    private val minRecBuffer = AudioRecord.getMinBufferSize(sampleRate, channelIn, audioFormat)
-    private val minPlayBuffer = AudioTrack.getMinBufferSize(sampleRate, channelOut, audioFormat)
+    private val minRecBuffer = maxOf(AudioRecord.getMinBufferSize(sampleRate, channelIn, audioFormat), 2048)
+    private val minPlayBuffer = maxOf(AudioTrack.getMinBufferSize(sampleRate, channelOut, audioFormat), 2048)
 
     @Volatile private var isTransmitting = false
     @Volatile private var isListening = false
@@ -47,6 +47,8 @@ class AudioEngine(private val port: Int = 50005) {
                 .setBufferSizeInBytes(minPlayBuffer)
                 .build()
 
+            if (track.state != AudioTrack.STATE_INITIALIZED) return@thread
+
             track.play()
             
             if (socket == null || socket?.isClosed == true) {
@@ -59,7 +61,7 @@ class AudioEngine(private val port: Int = 50005) {
             while (isListening) {
                 try {
                     socket?.receive(packet)
-                    if (!isTransmitting) { // Avoid echoing local transmission
+                    if (!isTransmitting) {
                         track.write(packet.data, 0, packet.length)
                     }
                 } catch (e: Exception) {
@@ -84,6 +86,11 @@ class AudioEngine(private val port: Int = 50005) {
                 audioFormat,
                 minRecBuffer
             )
+
+            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+                isTransmitting = false
+                return@thread
+            }
             
             val buffer = ByteArray(1024)
             recorder.startRecording()

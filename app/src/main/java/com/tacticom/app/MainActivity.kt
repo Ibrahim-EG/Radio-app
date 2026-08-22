@@ -3,6 +3,7 @@ package com.tacticom.app
 import android.Manifest
 import android.content.Context
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -24,15 +25,17 @@ class MainActivity : ComponentActivity() {
     private var isTransmitting by mutableStateOf(false)
 
     private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) initNetworkAndAudio()
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
+        if (micGranted) {
+            initNetworkAndAudio()
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Acquire MulticastLock for LAN UDP/mDNS discovery
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         multicastLock = wifiManager.createMulticastLock("TacticomMulticastLock").apply {
             setReferenceCounted(true)
@@ -40,7 +43,12 @@ class MainActivity : ComponentActivity() {
         }
 
         peerDiscovery = PeerDiscovery(this)
-        permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+
+        val permissionsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+        permissionLauncher.launch(permissionsToRequest.toTypedArray())
 
         setContent {
             IntercomScreen(
@@ -63,7 +71,7 @@ class MainActivity : ComponentActivity() {
 
     private fun initNetworkAndAudio() {
         audioEngine.startListening()
-        peerDiscovery.registerPeer(android.os.Build.MODEL, 50005)
+        peerDiscovery.registerPeer(Build.MODEL, 50005)
         peerDiscovery.startDiscovery { serviceInfo ->
             if (serviceInfo.host != null) {
                 discoveredTargetIp = serviceInfo.host

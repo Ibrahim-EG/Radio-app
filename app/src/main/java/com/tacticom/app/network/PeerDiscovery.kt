@@ -47,24 +47,31 @@ class PeerDiscovery(context: Context) {
     }
 
     private fun resolveNext(onPeerDiscovered: (NsdServiceInfo) -> Unit) {
-        if (isResolving || resolveQueue.isEmpty()) return
-        isResolving = true
-        val service = resolveQueue.poll() ?: return
+        synchronized(resolveQueue) {
+            if (isResolving || resolveQueue.isEmpty()) return
+            isResolving = true
+            val service = resolveQueue.poll() ?: run {
+                isResolving = false
+                return
+            }
 
-        nsdManager.resolveService(service, object : NsdManager.ResolveListener {
-            override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                synchronized(resolveQueue) {
-                    isResolving = false
-                    resolveNext(onPeerDiscovered)
+            nsdManager.resolveService(service, object : NsdManager.ResolveListener {
+                override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+                    synchronized(resolveQueue) {
+                        isResolving = false
+                        resolveNext(onPeerDiscovered)
+                    }
                 }
-            }
-            override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                onPeerDiscovered(serviceInfo)
-                synchronized(resolveQueue) {
-                    isResolving = false
-                    resolveNext(onPeerDiscovered)
+                override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+                    if (serviceInfo.host != null) {
+                        onPeerDiscovered(serviceInfo)
+                    }
+                    synchronized(resolveQueue) {
+                        isResolving = false
+                        resolveNext(onPeerDiscovered)
+                    }
                 }
-            }
-        })
+            })
+        }
     }
 }

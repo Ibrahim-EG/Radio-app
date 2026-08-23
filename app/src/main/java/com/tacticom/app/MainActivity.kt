@@ -12,6 +12,7 @@ import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import com.tacticom.app.service.TacticomService
 import com.tacticom.app.ui.IntercomScreen
@@ -52,15 +53,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        multicastLock = wifiManager.createMulticastLock("TacticomMulticastLock").apply {
-            setReferenceCounted(true)
-            acquire()
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            multicastLock = wifiManager.createMulticastLock("TacticomMulticastLock").apply {
+                setReferenceCounted(true)
+                acquire()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
 
-        val permissionsToRequest = mutableListOf(
-            Manifest.permission.RECORD_AUDIO
-        )
+        val permissionsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES)
             permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
@@ -68,37 +71,43 @@ class MainActivity : ComponentActivity() {
         permissionLauncher.launch(permissionsToRequest.toTypedArray())
 
         setContent {
-            IntercomScreen(
-                activePeersCount = activePeersCount,
-                amplitude = amplitude,
-                isTransmitting = isTransmitting,
-                onPttStart = {
-                    discoveredTargetIp?.let { ip ->
-                        isTransmitting = true
-                        tacticomService?.audioEngine?.startTransmitting(ip) { amp -> amplitude = amp }
+            MaterialTheme {
+                IntercomScreen(
+                    activePeersCount = activePeersCount,
+                    amplitude = amplitude,
+                    isTransmitting = isTransmitting,
+                    onPttStart = {
+                        discoveredTargetIp?.let { ip ->
+                            isTransmitting = true
+                            tacticomService?.audioEngine?.startTransmitting(ip) { amp -> amplitude = amp }
+                        }
+                    },
+                    onPttStop = {
+                        isTransmitting = false
+                        tacticomService?.audioEngine?.stopTransmitting()
+                    },
+                    onRingPeers = {
+                        discoveredTargetIp?.let { ip ->
+                            tacticomService?.sendRingSignal(ip)
+                        }
                     }
-                },
-                onPttStop = {
-                    isTransmitting = false
-                    tacticomService?.audioEngine?.stopTransmitting()
-                },
-                onRingPeers = {
-                    discoveredTargetIp?.let { ip ->
-                        tacticomService?.sendRingSignal(ip)
-                    }
-                }
-            )
+                )
+            }
         }
     }
 
     private fun startAndBindService() {
         val serviceIntent = Intent(this, TacticomService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent)
-        } else {
-            startService(serviceIntent)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
     private fun initNetworkDiscovery() {

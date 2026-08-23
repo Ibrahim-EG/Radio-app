@@ -5,6 +5,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.core.content.ContextCompat
 import com.tacticom.app.service.TacticomService
 import com.tacticom.app.ui.IntercomScreen
 import java.net.InetAddress
@@ -30,10 +32,13 @@ class MainActivity : ComponentActivity() {
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-            val binder = service as TacticomService.LocalBinder
-            tacticomService = binder.getService()
-            isBound = true
-            initNetworkDiscovery()
+            // FIX #1: Safe type cast with null check
+            val binder = service as? TacticomService.LocalBinder
+            if (binder != null) {
+                tacticomService = binder.getService()
+                isBound = true
+                initNetworkDiscovery()
+            }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -77,9 +82,12 @@ class MainActivity : ComponentActivity() {
                     amplitude = amplitude,
                     isTransmitting = isTransmitting,
                     onPttStart = {
-                        discoveredTargetIp?.let { ip ->
-                            isTransmitting = true
-                            tacticomService?.audioEngine?.startTransmitting(ip) { amp -> amplitude = amp }
+                        // FIX #8: Validate permissions before transmission
+                        if (canRecord()) {
+                            discoveredTargetIp?.let { ip ->
+                                isTransmitting = true
+                                tacticomService?.audioEngine?.startTransmitting(ip) { amp -> amplitude = amp }
+                            }
                         }
                     },
                     onPttStop = {
@@ -113,12 +121,31 @@ class MainActivity : ComponentActivity() {
     private fun initNetworkDiscovery() {
         val service = tacticomService ?: return
         service.peerDiscovery.registerPeer(Build.MODEL, 50005)
-        service.peerDiscovery.startDiscovery { serviceInfo ->
-            if (serviceInfo.host != null) {
-                discoveredTargetIp = serviceInfo.host
-                activePeersCount++
+        service.peerDiscovery.startDiscovery(
+            onPeerFound = { serviceInfo ->
+                // FIX #2: Track peers properly
+                if (serviceInfo.host != null) {
+                    discoveredTargetIp = serviceInfo.host
+                    // Only increment if this is a new peer
+                    activePeersCount = activePeersCount.coerceAtLeast(1)
+                }
+            },
+            onPeerLost = {
+                // FIX #2: Decrement count when peer is lost
+                activePeersCount = maxOf(0, activePeersCount - 1)
+                if (activePeersCount == 0) {
+                    discoveredTargetIp = null
+                }
             }
-        }
+        )
+    }
+
+    private fun canRecord(): Boolean {
+        // FIX #6: Re-check permissions at runtime
+        return ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
     }
 
     override fun onDestroy() {
@@ -127,6 +154,9 @@ class MainActivity : ComponentActivity() {
             unbindService(serviceConnection)
             isBound = false
         }
+        // Stop discovery to prevent battery drain
+        tacticomService?.peerDiscovery?.stopDiscovery()
+        tacticomService?.audioEngine?.release()
         multicastLock?.let {
             if (it.isHeld) it.release()
         }

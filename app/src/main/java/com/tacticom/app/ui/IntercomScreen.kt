@@ -5,6 +5,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -23,7 +26,8 @@ fun IntercomScreen(
     amplitude: Float,
     isTransmitting: Boolean,
     onPttStart: () -> Unit,
-    onPttStop: () -> Unit
+    onPttStop: () -> Unit,
+    onRingPeers: () -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -68,10 +72,11 @@ fun IntercomScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
+        // PTT Button
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
-                .size(200.dp)
+                .size(180.dp)
                 .background(
                     if (isTransmitting) Color(0xFFF85149) else Color(0xFF141923),
                     CircleShape
@@ -90,8 +95,26 @@ fun IntercomScreen(
                 text = if (isTransmitting) "TRANSMITTING" else "HOLD TO TALK",
                 color = Color.White,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 fontFamily = FontFamily.Monospace
+            )
+        }
+
+        Spacer(modifier = Modifier.height(24.dp))
+
+        // Remote Ring Trigger Button
+        Button(
+            onClick = onRingPeers,
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF21262D)),
+            shape = RoundedCornerShape(8.dp),
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            Text(
+                "RING REMOTE DEVICE",
+                color = Color(0xFF58A6FF),
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp
             )
         }
 

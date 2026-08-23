@@ -7,6 +7,9 @@ import android.net.nsd.NsdServiceInfo
 class PeerDiscovery(context: Context) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val serviceType = "_tacticom._tcp."
+    
+    // FIX #10: Store discovery listener for cleanup
+    private var discoveryListener: NsdManager.DiscoveryListener? = null
 
     fun registerPeer(deviceName: String, port: Int) {
         val serviceInfo = NsdServiceInfo().apply {
@@ -26,9 +29,12 @@ class PeerDiscovery(context: Context) {
         }
     }
 
-    fun startDiscovery(onPeerFound: (NsdServiceInfo) -> Unit) {
+    fun startDiscovery(
+        onPeerFound: (NsdServiceInfo) -> Unit,
+        onPeerLost: (() -> Unit)? = null
+    ) {
         try {
-            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, object : NsdManager.DiscoveryListener {
+            discoveryListener = object : NsdManager.DiscoveryListener {
                 override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {}
                 override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {}
                 override fun onDiscoveryStarted(serviceType: String?) {}
@@ -45,10 +51,27 @@ class PeerDiscovery(context: Context) {
                     }
                 }
 
-                override fun onServiceLost(serviceInfo: NsdServiceInfo?) {}
-            })
+                // FIX #2 & #10: Properly handle peer loss
+                override fun onServiceLost(serviceInfo: NsdServiceInfo?) {
+                    onPeerLost?.invoke()
+                }
+            }
+            
+            nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener!!)
         } catch (e: Exception) {
             e.printStackTrace()
         }
+    }
+
+    // FIX #10: Add method to stop discovery and clean up resources
+    fun stopDiscovery() {
+        discoveryListener?.let {
+            try {
+                nsdManager.stopServiceDiscovery(it)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+        discoveryListener = null
     }
 }

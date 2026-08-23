@@ -1,16 +1,19 @@
 package com.tacticom.app.audio
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import androidx.core.content.ContextCompat
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import kotlin.concurrent.thread
 
-class AudioEngine {
+class AudioEngine(private val context: Context? = null) {
     private val sampleRate = 16000
     private val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
     private val channelConfigOut = AudioFormat.CHANNEL_OUT_MONO
@@ -20,15 +23,18 @@ class AudioEngine {
     @Volatile private var isRecording = false
     @Volatile private var isListening = false
     private var rxSocket: DatagramSocket? = null
+    private var recordingThread: Thread? = null
 
     fun startListening() {
         if (isListening) return
         isListening = true
         thread(name = "Tacticom-AudioRX") {
+            var track: AudioTrack? = null
             try {
+                // FIX #4: Assign socket before setting listening flag
                 rxSocket = DatagramSocket(50005)
                 val buffer = ByteArray(minBufferSize)
-                val track = AudioTrack.Builder()
+                track = AudioTrack.Builder()
                     .setAudioAttributes(
                         android.media.AudioAttributes.Builder()
                             .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
@@ -52,19 +58,37 @@ class AudioEngine {
                     rxSocket?.receive(packet)
                     track.write(packet.data, 0, packet.length)
                 }
-                track.stop()
-                track.release()
             } catch (e: Exception) {
                 e.printStackTrace()
+            } finally {
+                // FIX #5: Ensure resources are always released
+                try {
+                    track?.stop()
+                    track?.release()
+                    rxSocket?.close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
 
     @SuppressLint("MissingPermission")
     fun startTransmitting(targetIp: InetAddress, onAmplitude: (Float) -> Unit) {
+        // FIX #6: Re-check permissions before recording
+        if (context != null) {
+            if (ContextCompat.checkSelfPermission(
+                    context,
+                    android.Manifest.permission.RECORD_AUDIO
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                return
+            }
+        }
+
         if (isRecording) return
         isRecording = true
-        thread(name = "Tacticom-AudioTX") {
+        recordingThread = thread(name = "Tacticom-AudioTX") {
             var recorder: AudioRecord? = null
             var socket: DatagramSocket? = null
             try {
@@ -83,7 +107,8 @@ class AudioEngine {
                     val read = recorder.read(buffer, 0, buffer.size)
                     if (read > 0) {
                         var sum = 0.0
-                        for (i in 0 until read step 2) {
+                        // FIX #3: Prevent array index out of bounds
+                        for (i in 0 until (read - 1) step 2) {
                             val sample = (buffer[i].toInt() or (buffer[i + 1].toInt() shl 8)).toShort()
                             sum += sample * sample
                         }
@@ -110,11 +135,21 @@ class AudioEngine {
 
     fun stopTransmitting() {
         isRecording = false
+        // FIX #7: Wait for recording thread to complete
+        try {
+            recordingThread?.join(5000)  // Wait up to 5 seconds
+        } catch (e: InterruptedException) {
+            e.printStackTrace()
+        }
     }
 
     fun release() {
         isRecording = false
         isListening = false
-        rxSocket?.close()
+        try {
+            rxSocket?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }

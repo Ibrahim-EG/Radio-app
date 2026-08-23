@@ -1,22 +1,25 @@
 package com.tacticom.app
 
 import android.Manifest
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
-import com.tacticom.app.audio.AudioEngine
-import com.tacticom.app.network.PeerDiscovery
+import com.tacticom.app.service.TacticomService
 import com.tacticom.app.ui.IntercomScreen
 import java.net.InetAddress
 
 class MainActivity : ComponentActivity() {
-    private val audioEngine = AudioEngine()
-    private lateinit var peerDiscovery: PeerDiscovery
+    private var tacticomService: TacticomService? = null
+    private var isBound by mutableStateOf(false)
     private var multicastLock: WifiManager.MulticastLock? = null
 
     private var discoveredTargetIp by mutableStateOf<InetAddress?>(null)
@@ -24,12 +27,25 @@ class MainActivity : ComponentActivity() {
     private var amplitude by mutableStateOf(0f)
     private var isTransmitting by mutableStateOf(false)
 
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            val binder = service as TacticomService.LocalBinder
+            tacticomService = binder.getService()
+            isBound = true
+            initNetworkDiscovery()
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            isBound = false
+            tacticomService = null
+        }
+    }
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        val micGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-        if (micGranted) {
-            initNetworkAndAudio()
+        if (permissions[Manifest.permission.RECORD_AUDIO] == true) {
+            startAndBindService()
         }
     }
 
@@ -42,11 +58,12 @@ class MainActivity : ComponentActivity() {
             acquire()
         }
 
-        peerDiscovery = PeerDiscovery(this)
-
-        val permissionsToRequest = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        val permissionsToRequest = mutableListOf(
+            Manifest.permission.RECORD_AUDIO
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
         }
         permissionLauncher.launch(permissionsToRequest.toTypedArray())
 
@@ -58,21 +75,36 @@ class MainActivity : ComponentActivity() {
                 onPttStart = {
                     discoveredTargetIp?.let { ip ->
                         isTransmitting = true
-                        audioEngine.startTransmitting(ip) { amp -> amplitude = amp }
+                        tacticomService?.audioEngine?.startTransmitting(ip) { amp -> amplitude = amp }
                     }
                 },
                 onPttStop = {
                     isTransmitting = false
-                    audioEngine.stopTransmitting()
+                    tacticomService?.audioEngine?.stopTransmitting()
+                },
+                onRingPeers = {
+                    discoveredTargetIp?.let { ip ->
+                        tacticomService?.sendRingSignal(ip)
+                    }
                 }
             )
         }
     }
 
-    private fun initNetworkAndAudio() {
-        audioEngine.startListening()
-        peerDiscovery.registerPeer(Build.MODEL, 50005)
-        peerDiscovery.startDiscovery { serviceInfo ->
+    private fun startAndBindService() {
+        val serviceIntent = Intent(this, TacticomService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun initNetworkDiscovery() {
+        val service = tacticomService ?: return
+        service.peerDiscovery.registerPeer(Build.MODEL, 50005)
+        service.peerDiscovery.startDiscovery { serviceInfo ->
             if (serviceInfo.host != null) {
                 discoveredTargetIp = serviceInfo.host
                 activePeersCount++
@@ -82,7 +114,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        audioEngine.release()
+        if (isBound) {
+            unbindService(serviceConnection)
+            isBound = false
+        }
         multicastLock?.let {
             if (it.isHeld) it.release()
         }

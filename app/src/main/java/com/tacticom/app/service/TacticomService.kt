@@ -24,7 +24,7 @@ import kotlin.concurrent.thread
 
 class TacticomService : Service() {
     private val binder = LocalBinder()
-    val audioEngine = AudioEngine()
+    val audioEngine by lazy { AudioEngine(this) }
     lateinit var peerDiscovery: PeerDiscovery
     
     private var controlSocket: DatagramSocket? = null
@@ -70,16 +70,19 @@ class TacticomService : Service() {
     private fun startControlListener() {
         isListeningControl = true
         thread(name = "Tacticom-ControlThread") {
+            var socket: DatagramSocket? = null
             try {
-                controlSocket = DatagramSocket(null).apply {
+                // FIX #4: Create socket and assign before entering loop
+                socket = DatagramSocket(null).apply {
                     reuseAddress = true
                     bind(InetSocketAddress(50006))
                 }
+                controlSocket = socket
                 val buffer = ByteArray(256)
                 val packet = DatagramPacket(buffer, buffer.size)
 
                 while (isListeningControl) {
-                    controlSocket?.receive(packet)
+                    socket.receive(packet)
                     val message = String(packet.data, 0, packet.length).trim()
                     if (message == "ACTION_RING") {
                         triggerRingtoneAndVibration()
@@ -87,20 +90,33 @@ class TacticomService : Service() {
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+            } finally {
+                try {
+                    socket?.close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
 
     fun sendRingSignal(targetIp: InetAddress) {
         thread {
+            var socket: DatagramSocket? = null
             try {
-                val socket = DatagramSocket()
+                // FIX #9: Use try-finally to ensure socket is closed
+                socket = DatagramSocket()
                 val data = "ACTION_RING".toByteArray()
                 val packet = DatagramPacket(data, data.size, targetIp, 50006)
                 socket.send(packet)
-                socket.close()
             } catch (e: Exception) {
                 e.printStackTrace()
+            } finally {
+                try {
+                    socket?.close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -133,7 +149,12 @@ class TacticomService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isListeningControl = false
-        controlSocket?.close()
+        try {
+            controlSocket?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         audioEngine.release()
+        peerDiscovery.stopDiscovery()
     }
 }

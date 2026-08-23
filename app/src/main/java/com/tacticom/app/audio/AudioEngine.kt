@@ -1,7 +1,6 @@
 package com.tacticom.app.audio
 
 import android.annotation.SuppressLint
-import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -9,137 +8,113 @@ import android.media.MediaRecorder
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
-import java.net.InetSocketAddress
 import kotlin.concurrent.thread
 
-class AudioEngine(private val port: Int = 50005) {
-    private val sampleRate = 48000
-    private val channelIn = AudioFormat.CHANNEL_IN_MONO
-    private val channelOut = AudioFormat.CHANNEL_OUT_MONO
+class AudioEngine {
+    private val sampleRate = 16000
+    private val channelConfigIn = AudioFormat.CHANNEL_IN_MONO
+    private val channelConfigOut = AudioFormat.CHANNEL_OUT_MONO
     private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    
-    private val minRecBuffer = maxOf(AudioRecord.getMinBufferSize(sampleRate, channelIn, audioFormat), 2048)
-    private val minPlayBuffer = maxOf(AudioTrack.getMinBufferSize(sampleRate, channelOut, audioFormat), 2048)
+    private val minBufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfigIn, audioFormat).coerceAtLeast(1024)
 
-    @Volatile private var isTransmitting = false
+    @Volatile private var isRecording = false
     @Volatile private var isListening = false
-
-    private var socket: DatagramSocket? = null
-
-    @Synchronized
-    private fun getOrCreateSocket(): DatagramSocket {
-        val currentSocket = socket
-        if (currentSocket != null && !currentSocket.isClosed) {
-            return currentSocket
-        }
-        val newSocket = DatagramSocket(null).apply {
-            reuseAddress = true
-            bind(InetSocketAddress(port))
-        }
-        socket = newSocket
-        return newSocket
-    }
+    private var rxSocket: DatagramSocket? = null
 
     fun startListening() {
         if (isListening) return
         isListening = true
-        
-        thread(name = "Tacticom-RxThread") {
-            val track = AudioTrack.Builder()
-                .setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                .setAudioFormat(
-                    AudioFormat.Builder()
-                        .setEncoding(audioFormat)
-                        .setSampleRate(sampleRate)
-                        .setChannelMask(channelOut)
-                        .build()
-                )
-                .setBufferSizeInBytes(minPlayBuffer)
-                .build()
+        thread(name = "Tacticom-AudioRX") {
+            try {
+                rxSocket = DatagramSocket(50005)
+                val buffer = ByteArray(minBufferSize)
+                val track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        android.media.AudioAttributes.Builder()
+                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                            .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(audioFormat)
+                            .setSampleRate(sampleRate)
+                            .setChannelMask(channelConfigOut)
+                            .build()
+                    )
+                    .setBufferSizeInBytes(minBufferSize)
+                    .build()
 
-            if (track.state != AudioTrack.STATE_INITIALIZED) return@thread
+                track.play()
 
-            track.play()
-            val activeSocket = getOrCreateSocket()
-            val buffer = ByteArray(1024)
-            val packet = DatagramPacket(buffer, buffer.size)
-
-            while (isListening && !activeSocket.isClosed) {
-                try {
-                    activeSocket.receive(packet)
-                    if (!isTransmitting) {
-                        track.write(packet.data, 0, packet.length)
-                    }
-                } catch (e: Exception) {
-                    break
+                while (isListening) {
+                    val packet = DatagramPacket(buffer, buffer.size)
+                    rxSocket?.receive(packet)
+                    track.write(packet.data, 0, packet.length)
                 }
+                track.stop()
+                track.release()
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-            track.stop()
-            track.release()
         }
     }
 
     @SuppressLint("MissingPermission")
     fun startTransmitting(targetIp: InetAddress, onAmplitude: (Float) -> Unit) {
-        if (isTransmitting) return
-        isTransmitting = true
+        if (isRecording) return
+        isRecording = true
+        thread(name = "Tacticom-AudioTX") {
+            var recorder: AudioRecord? = null
+            var socket: DatagramSocket? = null
+            try {
+                recorder = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfigIn,
+                    audioFormat,
+                    minBufferSize
+                )
+                socket = DatagramSocket()
+                val buffer = ByteArray(minBufferSize)
+                recorder.startRecording()
 
-        thread(name = "Tacticom-TxThread") {
-            val recorder = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelIn,
-                audioFormat,
-                minRecBuffer
-            )
+                while (isRecording) {
+                    val read = recorder.read(buffer, 0, buffer.size)
+                    if (read > 0) {
+                        var sum = 0.0
+                        for (i in 0 until read step 2) {
+                            val sample = (buffer[i].toInt() or (buffer[i + 1].toInt() shl 8)).toShort()
+                            sum += sample * sample
+                        }
+                        val amp = Math.sqrt(sum / (read / 2)) / 32768.0
+                        onAmplitude(amp.toFloat().coerceIn(0f, 1f))
 
-            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                isTransmitting = false
-                return@thread
-            }
-            
-            val activeSocket = getOrCreateSocket()
-            val buffer = ByteArray(1024)
-            recorder.startRecording()
-
-            while (isTransmitting && !activeSocket.isClosed) {
-                val read = recorder.read(buffer, 0, buffer.size)
-                if (read > 0) {
-                    try {
-                        val packet = DatagramPacket(buffer, read, targetIp, port)
-                        activeSocket.send(packet)
-                    } catch (e: Exception) {
-                        break
+                        val packet = DatagramPacket(buffer, read, targetIp, 50005)
+                        socket.send(packet)
                     }
-
-                    var maxPeak = 0
-                    for (i in 0 until read step 2) {
-                        val sample = (buffer[i].toInt() or (buffer[i + 1].toInt() shl 8)).toShort()
-                        val abs = Math.abs(sample.toInt())
-                        if (abs > maxPeak) maxPeak = abs
-                    }
-                    onAmplitude(maxPeak / 32768f)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                try {
+                    recorder?.stop()
+                    recorder?.release()
+                    socket?.close()
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
-            recorder.stop()
-            recorder.release()
-            onAmplitude(0f)
         }
     }
 
     fun stopTransmitting() {
-        isTransmitting = false
+        isRecording = false
     }
 
     fun release() {
-        isTransmitting = false
+        isRecording = false
         isListening = false
-        socket?.close()
-        socket = null
+        rxSocket?.close()
     }
 }
